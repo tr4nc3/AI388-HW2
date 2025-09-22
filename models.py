@@ -141,8 +141,8 @@ class NeuralSentimentClassifier(SentimentClassifier):
     method and you can optionally override predict_all if you want to use batching at inference time (not necessary,
     but may make things faster!)
     """
-    def __init__(self, model: DAN2, word_embeddings: WordEmbeddings, train_exs: List[SentimentExample]) -> None:
-    #def __init__(self, model: DeepAveragingNetwork, word_embeddings: WordEmbeddings, train_exs: List[SentimentExample]) -> None:
+
+    def __init__(self, model: DeepAveragingNetwork, word_embeddings: WordEmbeddings, train_exs: List[SentimentExample]) -> None:
         self.model = model
         self.model.eval()
         self.word_embeddings = word_embeddings
