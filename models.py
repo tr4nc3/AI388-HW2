@@ -65,6 +65,7 @@ class DeepAveragingNetwork(torch.nn.Module):
             self.fc1,
             # nn.BatchNorm1d(hidden_features), # TODO: Remove batchnorm
             nn.ReLU(),
+            nn.Dropout(p=0.1, inplace=False),
             self.fc2
         )
         self.loss = nn.CrossEntropyLoss()
@@ -211,6 +212,7 @@ def train_deep_averaging_network(args, train_exs: List[SentimentExample], dev_ex
         model.train()
         total_loss = 0.0
         train_accs = []
+        loss_values = []
         for j in range(0, len(train_exs), batch_size):
             model.zero_grad()
             batch = train_exs[j:j + batch_size]
