@@ -10,7 +10,7 @@ from torch import optim
 
 from nltk.metrics.distance import edit_distance
 from collections import defaultdict
-
+import collections
 from sentiment_data import *
 
 # import logging
@@ -99,6 +99,9 @@ class NeuralSentimentClassifier(SentimentClassifier):
         self.model.eval()
         self.word_embeddings = word_embeddings
         # typo corrections
+        self.edit_distance_threshold = 2
+        self.word_freq = None
+
         self.prefix_cache = defaultdict(list)
         for i in range(len(self.word_embeddings.word_indexer)):
             word = self.word_embeddings.word_indexer.get_object(i)
@@ -111,6 +114,10 @@ class NeuralSentimentClassifier(SentimentClassifier):
         """
         indices = []
         unk_idx = self.word_embeddings.word_indexer.index_of("UNK")
+        # if more than the threshold then change
+        self.edit_distance_threshold = 2
+        self.word_freq = collections.Counter(word for word in ex_words)
+
         if has_typos:
             word_indices = []
             for word in ex_words:
@@ -119,11 +126,28 @@ class NeuralSentimentClassifier(SentimentClassifier):
                 if idx == -1 and len(word) >= 3:
                     prefix = word[:3]
                     candidate_words = self.prefix_cache.get(prefix)
+                    # Wasn't giving great accuracy
+                    # if candidate_words:
+                    #    best_match = min(candidate_words, key=lambda c: edit_distance(word, c))
+                    #    idx = self.word_embeddings.word_indexer.index_of(best_match)
+                    #else:  # If no candidates, fall back to UNK
+                    #    idx = unk_idx
                     if candidate_words:
-                        best_match = min(candidate_words, key=lambda c: edit_distance(word, c))
-                        idx = self.word_embeddings.word_indexer.index_of(best_match)
-                    else:  # If no candidates, fall back to UNK
-                        idx = unk_idx
+                        # Find the minimum edit distance among candidates
+                        min_dist = min(edit_distance(word, c) for c in candidate_words)
+                        # Only proceed if the best match is within the threshold
+                        if min_dist <= self.edit_distance_threshold:
+                            # Get all candidates with that minimum distance (potential ties)
+                            best_candidates = [c for c in candidate_words if edit_distance(word, c) == min_dist]
+                            if len(best_candidates) == 1:
+                                best_match = best_candidates[0]
+                            else:
+                                # Break the tie using word frequency
+                                best_match = max(best_candidates, key=lambda c: self.word_freq.get(c, 0))
+                            idx = self.word_embeddings.word_indexer.index_of(best_match)
+                        else:
+                            # Best match is too far, treat as UNK
+                            idx = unk_idx
                 elif idx == -1: # If not in typo mode or word is too short, just use UNK
                     idx = unk_idx
                 word_indices.append(idx)
@@ -132,7 +156,6 @@ class NeuralSentimentClassifier(SentimentClassifier):
                     indices_tensor = torch.tensor([word_indices], dtype=torch.long)
                     log_probs = self.model(indices_tensor, lengths)
         else:
-
             indices = [self.word_embeddings.word_indexer.index_of(word) for word in ex_words]
             indices = [idx if idx != -1 else unk_idx for idx in indices]
             lengths = torch.tensor([len(ex_words)], dtype=torch.long)
