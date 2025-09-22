@@ -1,11 +1,11 @@
 # models.py
-import datetime as dt
+#import datetime as dt
 import random
-from pathlib import Path
+#from pathlib import Path
 
 import torch
 import torch.nn as nn
-import torch.utils.tensorboard as tb
+# import torch.utils.tensorboard as tb
 from torch import optim
 
 from nltk.metrics.distance import edit_distance
@@ -13,13 +13,13 @@ from collections import defaultdict
 
 from sentiment_data import *
 
-import logging
+# import logging
 
-logging.basicConfig(filename='ai388-hw2.log', level=logging.DEBUG,
-                    format='%(asctime)s [%(filename)s:%(lineno)s - %(funcName)10s() ] %(message)s',
-                    datefmt='%Y-%m-%d %H:%M:%S')
-log = logging.getLogger(__name__)
-log.setLevel(logging.DEBUG)
+# logging.basicConfig(filename='ai388-hw2.log', level=logging.DEBUG,
+#                    format='%(asctime)s [%(filename)s:%(lineno)s - %(funcName)10s() ] %(message)s',
+#                    datefmt='%Y-%m-%d %H:%M:%S')
+#log = logging.getLogger(__name__)
+#log.setLevel(logging.DEBUG)
 
 class SentimentClassifier(object):
     """
@@ -193,8 +193,8 @@ def train_deep_averaging_network(args, train_exs: List[SentimentExample], dev_ex
     #
     exp_dir = "logs"
     model_name = 'DAN'
-    log_dir = Path(exp_dir) / f'{model_name}_{dt.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}'
-    logger = tb.SummaryWriter(str(log_dir))
+    # log_dir = Path(exp_dir) / f'{model_name}_{dt.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}'
+    # logger = tb.SummaryWriter(str(log_dir))
     num_epochs = args.num_epochs
     lr = args.lr
     batch_size = args.batch_size
@@ -233,7 +233,7 @@ def train_deep_averaging_network(args, train_exs: List[SentimentExample], dev_ex
             # TODO: print shapes, lengths, loss, etc.
             # log.info(f'[+] {batch_tensor.shape=} {lengths.shape=} {labels.shape=}')
             out = model(batch_tensor, lengths)
-            loss = loss_fn(out, labels) # TODO: CE Loss expects logits not softmax
+            loss = loss_fn(out, labels) # CE Loss expects logits not softmax
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
@@ -256,9 +256,9 @@ def train_deep_averaging_network(args, train_exs: List[SentimentExample], dev_ex
         epoch_val_acc = torch.mean(torch.stack(val_accs))
         avg_loss = total_loss / (len(train_exs) / batch_size) if len(train_exs) > 0 else 0
         print(f'Epoch {i + 1}/{num_epochs}: loss={avg_loss:.4f}, train_acc={epoch_train_acc:.4f}, dev_acc={epoch_val_acc:.4f}')
-        log.info(f'[+] Epoch {i + 1}/{num_epochs}: loss={avg_loss:.4f}, train_acc={epoch_train_acc:.4f}, dev_acc={epoch_val_acc:.4f}')
-        logger.add_scalar("loss", avg_loss, i)
-        logger.add_scalars("accuracy", {"train": epoch_train_acc, "dev": epoch_val_acc}, i)
-        logger.flush()
+        #log.info(f'[+] Epoch {i + 1}/{num_epochs}: loss={avg_loss:.4f}, train_acc={epoch_train_acc:.4f}, dev_acc={epoch_val_acc:.4f}')
+        #logger.add_scalar("loss", avg_loss, i)
+        #logger.add_scalars("accuracy", {"train": epoch_train_acc, "dev": epoch_val_acc}, i)
+        #logger.flush()
         # return
     return NeuralSentimentClassifier(model, word_embeddings)
