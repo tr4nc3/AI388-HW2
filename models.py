@@ -94,13 +94,13 @@ class NeuralSentimentClassifier(SentimentClassifier):
     method and you can optionally override predict_all if you want to use batching at inference time (not necessary,
     but may make things faster!)
     """
-    def __init__(self, model: DeepAveragingNetwork, word_embeddings: WordEmbeddings) -> None:
+    def __init__(self, model: DeepAveragingNetwork, word_embeddings: WordEmbeddings, train_exs: List[SentimentExample]) -> None:
         self.model = model
         self.model.eval()
         self.word_embeddings = word_embeddings
         # typo corrections
         self.edit_distance_threshold = 2
-        self.word_freq = None
+        self.word_freq = collections.Counter(word for ex in train_exs for word in ex.words)
 
         self.prefix_cache = defaultdict(list)
         for i in range(len(self.word_embeddings.word_indexer)):
@@ -114,9 +114,6 @@ class NeuralSentimentClassifier(SentimentClassifier):
         """
         indices = []
         unk_idx = self.word_embeddings.word_indexer.index_of("UNK")
-        # if more than the threshold then change
-        self.edit_distance_threshold = 2
-        self.word_freq = collections.Counter(word for word in ex_words)
 
         if has_typos:
             word_indices = []
@@ -170,7 +167,6 @@ class NeuralSentimentClassifier(SentimentClassifier):
     def predict_all(self, all_ex_words: List[List[str]], has_typos: bool = False):
         batch_size = 64
         predictions = []
-
         for i in range(0, len(all_ex_words), batch_size):
             batch = all_ex_words[i:i+batch_size]
             batch_lengths = torch.tensor([len(ex_words) for ex_words in batch], dtype=torch.long)
@@ -284,4 +280,4 @@ def train_deep_averaging_network(args, train_exs: List[SentimentExample], dev_ex
         #logger.add_scalars("accuracy", {"train": epoch_train_acc, "dev": epoch_val_acc}, i)
         #logger.flush()
         # return
-    return NeuralSentimentClassifier(model, word_embeddings)
+    return NeuralSentimentClassifier(model, word_embeddings, train_exs)
