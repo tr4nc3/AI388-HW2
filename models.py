@@ -198,7 +198,7 @@ def train_deep_averaging_network(args, train_exs: List[SentimentExample], dev_ex
     num_epochs = args.num_epochs
     lr = args.lr
     batch_size = args.batch_size
-    emb_layer = word_embeddings.get_initialized_embedding_layer(frozen=False, padding_idx=0)
+    emb_layer = word_embeddings.get_initialized_embedding_layer(frozen=True, padding_idx=0)
     input_size = word_embeddings.get_embedding_length()
     num_classes = 2
     hidden_features = args.hidden_size
