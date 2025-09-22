@@ -150,7 +150,7 @@ def read_word_embeddings(embeddings_file: str) -> WordEmbeddings:
             float_numbers = [float(number_str) for number_str in numbers.split()]
             vector = np.array(float_numbers)
             word_indexer.add_and_get_index(word)
-            # Append the PAD and UNK vectors to start. Have to do this weirdly because we need to read the first line
+            #             # Append the PAD and UNK vectors to start. Have to do this weirdly because we need to read the first line
             # of the file to see what the embedding dim is
             if len(vectors) == 0:
                 vectors.append(np.zeros(vector.shape[0]))

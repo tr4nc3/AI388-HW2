@@ -1,12 +1,22 @@
 # models.py
+import datetime as dt
+import random
+from pathlib import Path
 
 import torch
 import torch.nn as nn
+import torch.utils.tensorboard as tb
 from torch import optim
-import numpy as np
-import random
+
+
 from sentiment_data import *
 
+
+import logging
+
+logging.basicConfig(filename='ai388-hw2.log', level=logging.INFO)
+log = logging.getLogger(__name__)
+log.setLevel(logging.DEBUG)
 
 class SentimentClassifier(object):
     """
@@ -35,6 +45,33 @@ class SentimentClassifier(object):
         """
         return [self.predict(ex_words, has_typos) for ex_words in all_ex_words]
 
+class DeepAveragingNetwork(torch.nn.Module):
+    def __init__(self, in_features, hidden_features, out_features: int) -> None:
+        super(DeepAveragingNetwork, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.hidden_features = hidden_features
+        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.fc2 = nn.Linear(hidden_features, out_features)
+        # from hw example code - ffnn_example.py
+        # Initialize weights according to a formula due to Xavier Glorot.
+        nn.init.xavier_uniform_(self.fc1.weight)
+        nn.init.xavier_uniform_(self.fc2.weight)
+        self.dan = nn.Sequential(
+            self.fc1,
+            # nn.BatchNorm1d(hidden_features), # TODO: Remove batchnorm
+            nn.ReLU(),
+            self.fc2
+        )
+        self.loss = nn.CrossEntropyLoss()
+        # TODO: Try dropout
+    def forward(self, sentence_indices, sentence_lengths) -> torch.Tensor :
+
+        embeddings = self.embedding_layer(sentence_indices)
+        avg = torch.sum(embeddings, dim=1) / sentence_lengths.unsqueeze(1).float() # TODO: User torch.mean()
+        logits = self.dan(avg)
+        # x = torch.nn.functional.log_softmax(logits, dim=1) # activation sigmoid
+        return logits
 
 class TrivialSentimentClassifier(SentimentClassifier):
     def predict(self, ex_words: List[str], has_typos: bool) -> int:
@@ -52,9 +89,56 @@ class NeuralSentimentClassifier(SentimentClassifier):
     method and you can optionally override predict_all if you want to use batching at inference time (not necessary,
     but may make things faster!)
     """
-    def __init__(self):
-        raise NotImplementedError
+    def __init__(self, model: DeepAveragingNetwork, word_embeddings: WordEmbeddings) -> None:
+        self.model = model
+        self.model.eval()
+        self.word_embeddings = word_embeddings
 
+    def predict(self, ex_words: List[str], has_typo :bool = False) -> int:
+        """
+        """
+        if has_typo:
+            # TODO: figure out how to auto-correct
+            pass
+        else:
+            indices = [self.word_embeddings.word_indexer.index_of(word) for word in ex_words]
+            lengths = torch.tensor([len(ex_words)])
+            with torch.no_grad():
+                log_probs = self.model(torch.tensor([indices], dtype=torch.long), lengths)
+                # DEBUG
+                log.info(f'[+] {log_probs=}')
+            prediction = torch.argmax(log_probs).item()
+            return prediction
+
+    def predict_all(self, all_ex_words: List[List[str]], has_typos: bool = False):
+        batch_size = 64
+        predictions = []
+
+        for i in range(0, len(all_ex_words), batch_size):
+            batch = all_ex_words[i:i+batch_size]
+            batch_lengths = torch.tensor([len(ex_words) for ex_words in batch], dtype=torch.float32)
+            max_len = max(len(ex) for ex in batch)
+            pad_idx = self.word_embeddings.word_indexer.index_of("PAD")
+            batch_indices_lists = [[self.word_embeddings.word_indexer.index_of(w) for w in ex_words] for ex_words in batch]
+            padded_batch_indices = [indices + [pad_idx] * (max_len - len(indices)) for indices in batch_indices_lists]
+            batch_tensor = torch.tensor(padded_batch_indices, dtype=torch.long)
+            with torch.no_grad():
+                log_probs = self.model(batch_tensor, batch_lengths)
+            batch_predictions = torch.argmax(log_probs, dim=1).tolist()
+            predictions.extend(batch_predictions)
+        return predictions
+
+def compute_accuracy(outputs: torch.Tensor, labels: torch.Tensor):
+    """
+    Arguments:
+        outputs: torch.Tensor, shape (b, num_classes) either logits or probabilities
+        labels: torch.Tensor, shape (b,) with the ground truth class labels
+
+    Returns:
+        a single torch.Tensor scalar
+    """
+    outputs_idx = outputs.max(1)[1].type_as(labels)
+    return (outputs_idx == labels).float().mean()
 
 def train_deep_averaging_network(args, train_exs: List[SentimentExample], dev_exs: List[SentimentExample],
                                  word_embeddings: WordEmbeddings, train_model_for_typo_setting: bool) -> NeuralSentimentClassifier:
@@ -68,5 +152,69 @@ def train_deep_averaging_network(args, train_exs: List[SentimentExample], dev_ex
     and return an instance of that for the typo setting if you want; you're allowed to return two different model types
     for the two settings.
     """
-    raise NotImplementedError
+    # raise NotImplementedError
+    #
+    exp_dir = "logs"
+    model_name = 'DAN'
+    log_dir = Path(exp_dir) / f'{model_name}_{dt.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}'
+    logger = tb.SummaryWriter(str(log_dir))
+    num_epochs = args.num_epochs
+    lr = args.lr
+    batch_size = args.batch_size
+    emb_layer = word_embeddings.get_initialized_embedding_layer()
+    input_size = word_embeddings.get_embedding_length()
+    num_classes = 2
+    hidden_features = args.hidden_size
+    model = DeepAveragingNetwork(input_size, hidden_features, num_classes)
+    model.embedding_layer = emb_layer
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    loss_fn = nn.CrossEntropyLoss()
 
+    for i in range(num_epochs):
+        random.shuffle(train_exs)
+        model.train()
+        total_loss = 0.0
+        train_accs = []
+        for j in range(0, len(train_exs), batch_size):
+            model.zero_grad()
+            batch = train_exs[j:j + batch_size]
+            if not batch:
+                continue
+            labels = torch.tensor([ex.label for ex in batch])
+            lengths = torch.tensor([len(ex.words) for ex in batch])
+            batch_indices_lists = [[word_embeddings.word_indexer.index_of(w) for w in ex.words] for ex in batch]
+
+            max_len = max(len(indices) for indices in batch_indices_lists)
+            pad_idx = word_embeddings.word_indexer.index_of("PAD")
+
+            padded_batch_indices = [indices + [pad_idx] * (max_len - len(indices)) for indices in batch_indices_lists]
+            batch_tensor = torch.tensor(padded_batch_indices, dtype=torch.long)
+            # TODO: print shapes, lengths, loss, etc.
+
+            out = model(batch_tensor, lengths)
+            loss = loss_fn(out, labels) # TODO: CE Loss expects logits not softmax
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+            train_accs.append(compute_accuracy(out, labels))
+        # Dev eval
+        model.eval()
+        val_accs = []
+        for dev_ex in dev_exs:
+            indices = [word_embeddings.word_indexer.index_of(word) for word in dev_ex.words]
+            length = torch.tensor([len(dev_ex.words)])
+            indices_tensor = torch.tensor([indices], dtype=torch.long)
+            label = torch.tensor([dev_ex.label])
+            with torch.no_grad():
+                output = model(indices_tensor, length)
+            val_accs.append(compute_accuracy(output, label))
+
+        epoch_train_acc = torch.mean(torch.stack(train_accs))
+        # epoch_val_acc = torch.mean(torch.stack(val_accs))
+        avg_loss = total_loss / (len(train_exs) / batch_size) if len(train_exs) > 0 else 0
+        # print(f'Epoch {i + 1}/{num_epochs}: loss={avg_loss:.4f}, train_acc={epoch_train_acc:.4f}, dev_acc={epoch_val_acc:.4f}')
+        logger.add_scalar("loss", avg_loss, i)
+        # logger.add_scalars("accuracy", {"train": epoch_train_acc, "dev": epoch_val_acc}, i)
+        logger.flush()
+        return
+    return NeuralSentimentClassifier(model, word_embeddings)

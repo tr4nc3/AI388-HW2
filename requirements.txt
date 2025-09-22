@@ -4,4 +4,4 @@ spacy
 torch
 scipy
 matplotlib
-torchvision
+torch

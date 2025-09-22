@@ -12,4 +12,4 @@ To make sure everything is working, run the following command:
 
 `python neural_sentiment_classifier.py`
 
-`python neural_sentiment_classifier.py --use typo setting`
+`python neural_sentiment_classifier.py --use_typo_setting`

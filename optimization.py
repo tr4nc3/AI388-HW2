@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 
 ### 
 # IMPLEMENT ME! REPLACE WITH YOUR ANSWER TO PART 1B
-OPTIMAL_STEP_SIZE = 1.0
+OPTIMAL_STEP_SIZE = 0.11 # epoch 76
 ###
 
 def _parse_args():
@@ -17,7 +17,7 @@ def _parse_args():
     """
     parser = argparse.ArgumentParser(description='optimization.py')
     parser.add_argument('--func', type=str, default='QUAD', help='function to optimize (QUAD or NN)')
-    parser.add_argument('--lr', type=float, default=1., help='learning rate')
+    parser.add_argument('--lr', type=float, default=OPTIMAL_STEP_SIZE, help='learning rate')
     parser.add_argument('--weight_decay', type=float, default=0., help='weight decay')
     parser.add_argument('--epochs', type=int, default=100, help='number of epochs')
     args = parser.parse_args()
@@ -41,7 +41,10 @@ def quadratic_grad(x1, x2):
     :param x2: second coordinate
     :return: a one-dimensional numpy array containing two elements representing the gradient
     """
-    raise Exception("Implement me!")
+    # raise Exception("Implement me!")
+    nabla_x1 = 2 * (x1 - 1)
+    nabla_x2 = 16 * (x2 - 1)
+    return np.array([nabla_x1, nabla_x2])
 
 
 def sgd_test_quadratic(args):
