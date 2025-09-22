@@ -48,6 +48,53 @@ class SentimentClassifier(object):
         """
         return [self.predict(ex_words, has_typos) for ex_words in all_ex_words]
 
+
+class CharLSTM(torch.nn.Module):
+    def __init__(self, vocab_sz, embed_dim, hidden_dim: int) -> None:
+        super(CharLSTM, self).__init__()
+        self.char_emb = nn.Embedding(vocab_sz, embed_dim)
+        self.lstm = nn.LSTM(embed_dim, hidden_dim, batch_first=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.char_emb(x)
+        _, (x, _) = self.lstm(x.unsqueeze(0))
+        return x.squeeze(0)
+
+class DAN2(torch.nn.Module):
+    def __init__(self, glove_embedding_layer: nn.Embedding, char_lstm :nn.Module, in_features, hidden_features, out_features: int) -> None:
+        super(DAN2, self).__init__()
+        self.embedding_layer = glove_embedding_layer
+        self.char_lstm = char_lstm
+        self.in_features = in_features
+        self.out_features = out_features
+        self.hidden_features = hidden_features
+        combined_dim = self.glove_embeddings.embedding_dim + self.char_lstm.lstm.hidden_size
+        self.fc1 = nn.Linear(combined_dim, hidden_features)
+        self.fc2 = nn.Linear(hidden_features, out_features)
+        self.dan2 = nn.Sequential(
+            self.fc1,
+            nn.ReLU(),
+            nn.Dropout(p=0.1, inplace=False),
+            self.fc2
+        )
+        nn.init.xavier_uniform_(self.fc1.weight)
+        nn.init.xavier_uniform_(self.fc2.weight)
+        self.loss = nn.CrossEntropyLoss()
+
+    def forward(self, word_indices: torch.Tensor, char_indices_per_word: int) -> torch.Tensor :
+        hybrid_vectors = []
+        for i in range(len(word_indices)):
+            word_idx = word_indices[i]
+            char_indices = char_indices_per_word[i]
+            glove_vec = self.glove_embeddings(word_idx)
+            char_vec = self.char_lstm(char_indices)
+            # Concatenate
+            hybrid_vec = torch.cat((glove_vec.squeeze(), char_vec.squeeze()), dim=0)
+            hybrid_vectors.append(hybrid_vec)
+        avg_vector = torch.mean(torch.stack(hybrid_vectors), dim=0)
+        logits = self.dan2(avg_vector.unsqueeze(0))
+        return logits
+
 class DeepAveragingNetwork(torch.nn.Module):
     def __init__(self, embedding_layer: nn.Embedding, in_features, hidden_features, out_features: int) -> None:
         super(DeepAveragingNetwork, self).__init__()
@@ -94,12 +141,13 @@ class NeuralSentimentClassifier(SentimentClassifier):
     method and you can optionally override predict_all if you want to use batching at inference time (not necessary,
     but may make things faster!)
     """
-    def __init__(self, model: DeepAveragingNetwork, word_embeddings: WordEmbeddings, train_exs: List[SentimentExample]) -> None:
+    def __init__(self, model: DAN2, word_embeddings: WordEmbeddings, train_exs: List[SentimentExample]) -> None:
+    #def __init__(self, model: DeepAveragingNetwork, word_embeddings: WordEmbeddings, train_exs: List[SentimentExample]) -> None:
         self.model = model
         self.model.eval()
         self.word_embeddings = word_embeddings
         # typo corrections
-        self.edit_distance_threshold = 2
+        self.edit_distance_threshold = 3
         self.word_freq = collections.Counter(word for ex in train_exs for word in ex.words)
 
         self.prefix_cache = defaultdict(list)
@@ -165,7 +213,7 @@ class NeuralSentimentClassifier(SentimentClassifier):
         return prediction
 
     def predict_all(self, all_ex_words: List[List[str]], has_typos: bool = False):
-        batch_size = 64
+        batch_size = 128
         predictions = []
         for i in range(0, len(all_ex_words), batch_size):
             batch = all_ex_words[i:i+batch_size]
