@@ -1,21 +1,17 @@
 # models.py
-#import datetime as dt
+# import datetime as dt
 import random
-#from pathlib import Path
+# from pathlib import Path
 
 import torch
 import torch.nn as nn
 # import torch.utils.tensorboard as tb
 from torch import optim
-
-from nltk.metrics.distance import edit_distance
-from collections import defaultdict
-import collections
 from sentiment_data import *
 
-# import logging
+#import logging
 
-# logging.basicConfig(filename='ai388-hw2.log', level=logging.DEBUG,
+#logging.basicConfig(filename='ai388-hw2.log', level=logging.DEBUG,
 #                    format='%(asctime)s [%(filename)s:%(lineno)s - %(funcName)10s() ] %(message)s',
 #                    datefmt='%Y-%m-%d %H:%M:%S')
 #log = logging.getLogger(__name__)
@@ -60,15 +56,15 @@ class CharLSTM(torch.nn.Module):
         _, (x, _) = self.lstm(x.unsqueeze(0))
         return x.squeeze(0)
 
-class DAN2(torch.nn.Module):
+class DeepAveragingLSTMNetwork(torch.nn.Module):
     def __init__(self, glove_embedding_layer: nn.Embedding, char_lstm :nn.Module, in_features, hidden_features, out_features: int) -> None:
-        super(DAN2, self).__init__()
-        self.embedding_layer = glove_embedding_layer
+        super(DeepAveragingLSTMNetwork, self).__init__()
+        self.glove_embedding_layer = glove_embedding_layer
         self.char_lstm = char_lstm
         self.in_features = in_features
         self.out_features = out_features
         self.hidden_features = hidden_features
-        combined_dim = self.glove_embeddings.embedding_dim + self.char_lstm.lstm.hidden_size
+        combined_dim = self.glove_embedding_layer.embedding_dim + self.char_lstm.lstm.hidden_size
         self.fc1 = nn.Linear(combined_dim, hidden_features)
         self.fc2 = nn.Linear(hidden_features, out_features)
         self.dan2 = nn.Sequential(
@@ -81,49 +77,19 @@ class DAN2(torch.nn.Module):
         nn.init.xavier_uniform_(self.fc2.weight)
         self.loss = nn.CrossEntropyLoss()
 
-    def forward(self, word_indices: torch.Tensor, char_indices_per_word: int) -> torch.Tensor :
+    def forward(self, word_indices, char_indices_per_word: torch.Tensor) -> torch.Tensor :
         hybrid_vectors = []
         for i in range(len(word_indices)):
             word_idx = word_indices[i]
             char_indices = char_indices_per_word[i]
-            glove_vec = self.glove_embeddings(word_idx)
+            glove_vec = self.glove_embedding_layer(word_idx)
             char_vec = self.char_lstm(char_indices)
-            # Concatenate
             hybrid_vec = torch.cat((glove_vec.squeeze(), char_vec.squeeze()), dim=0)
             hybrid_vectors.append(hybrid_vec)
         avg_vector = torch.mean(torch.stack(hybrid_vectors), dim=0)
         logits = self.dan2(avg_vector.unsqueeze(0))
         return logits
 
-class DeepAveragingNetwork(torch.nn.Module):
-    def __init__(self, embedding_layer: nn.Embedding, in_features, hidden_features, out_features: int) -> None:
-        super(DeepAveragingNetwork, self).__init__()
-        self.embedding_layer = embedding_layer
-        self.in_features = in_features
-        self.out_features = out_features
-        self.hidden_features = hidden_features
-        self.fc1 = nn.Linear(in_features, hidden_features)
-        self.fc2 = nn.Linear(hidden_features, out_features)
-        # from hw example code - ffnn_example.py
-        # Initialize weights according to a formula due to Xavier Glorot.
-        nn.init.xavier_uniform_(self.fc1.weight)
-        nn.init.xavier_uniform_(self.fc2.weight)
-        self.dan = nn.Sequential(
-            self.fc1,
-            # nn.BatchNorm1d(hidden_features), # TODO: Remove batchnorm
-            nn.ReLU(),
-            nn.Dropout(p=0.1, inplace=False),
-            self.fc2
-        )
-        self.loss = nn.CrossEntropyLoss()
-        # TODO: Try dropout
-    def forward(self, sentence_indices, sentence_lengths) -> torch.Tensor :
-        # log.info(f'[+] {sentence_indices.shape=} {sentence_lengths.shape=}')
-        embeddings = self.embedding_layer(sentence_indices)
-        avg = torch.sum(embeddings, dim=1) / sentence_lengths.unsqueeze(1).float() # TODO: User torch.mean()
-        logits = self.dan(avg)
-        # x = torch.nn.functional.log_softmax(logits, dim=1) # activation sigmoid
-        return logits
 
 class TrivialSentimentClassifier(SentimentClassifier):
     def predict(self, ex_words: List[str], has_typos: bool) -> int:
@@ -133,104 +99,36 @@ class TrivialSentimentClassifier(SentimentClassifier):
         """
         return 1
 
-
 class NeuralSentimentClassifier(SentimentClassifier):
-    """
-    Implement your NeuralSentimentClassifier here. This should wrap an instance of the network with learned weights
-    along with everything needed to run it on new data (word embeddings, etc.). You will need to implement the predict
-    method and you can optionally override predict_all if you want to use batching at inference time (not necessary,
-    but may make things faster!)
-    """
-
-    def __init__(self, model: DeepAveragingNetwork, word_embeddings: WordEmbeddings, train_exs: List[SentimentExample]) -> None:
+    def __init__(self, model: DeepAveragingLSTMNetwork, word_embeddings: WordEmbeddings, train_exs: List[SentimentExample], char_indexer: Indexer):
         self.model = model
         self.model.eval()
-        self.word_embeddings = word_embeddings
-        # typo corrections
-        self.edit_distance_threshold = 3
-        self.word_freq = collections.Counter(word for ex in train_exs for word in ex.words)
+        self.word_indexer = word_embeddings.word_indexer
+        self.char_indexer = char_indexer
+        self.train_exs = train_exs
 
-        self.prefix_cache = defaultdict(list)
-        for i in range(len(self.word_embeddings.word_indexer)):
-            word = self.word_embeddings.word_indexer.get_object(i)
-            if len(word) >= 3:
-                prefix = word[:3]
-                self.prefix_cache[prefix].append(word)
-
-    def predict(self, ex_words: List[str], has_typos :bool = False) -> int:
+    def predict(self, ex_words: List[str], has_typos: bool) -> int:
         """
         """
-        indices = []
-        unk_idx = self.word_embeddings.word_indexer.index_of("UNK")
+        word_unk_idx = self.word_indexer.index_of('UNK')
+        char_unk_idx = self.char_indexer.index_of('UNK')
+        word_indices = [self.word_indexer.index_of(word) for word in ex_words]
+        word_indices = [idx if idx != -1 else word_unk_idx for idx in word_indices]
+        word_indices_tensor = torch.tensor(word_indices, dtype=torch.long)
 
-        if has_typos:
-            word_indices = []
-            for word in ex_words:
-                idx = self.word_embeddings.word_indexer.index_of(word)
-                # If the word is unknown AND we are in typo mode, try to correct it.
-                if idx == -1 and len(word) >= 3:
-                    prefix = word[:3]
-                    candidate_words = self.prefix_cache.get(prefix)
-                    # Wasn't giving great accuracy
-                    # if candidate_words:
-                    #    best_match = min(candidate_words, key=lambda c: edit_distance(word, c))
-                    #    idx = self.word_embeddings.word_indexer.index_of(best_match)
-                    #else:  # If no candidates, fall back to UNK
-                    #    idx = unk_idx
-                    if candidate_words:
-                        # Find the minimum edit distance among candidates
-                        min_dist = min(edit_distance(word, c) for c in candidate_words)
-                        # Only proceed if the best match is within the threshold
-                        if min_dist <= self.edit_distance_threshold:
-                            # Get all candidates with that minimum distance (potential ties)
-                            best_candidates = [c for c in candidate_words if edit_distance(word, c) == min_dist]
-                            if len(best_candidates) == 1:
-                                best_match = best_candidates[0]
-                            else:
-                                # Break the tie using word frequency
-                                best_match = max(best_candidates, key=lambda c: self.word_freq.get(c, 0))
-                            idx = self.word_embeddings.word_indexer.index_of(best_match)
-                        else:
-                            # Best match is too far, treat as UNK
-                            idx = unk_idx
-                elif idx == -1: # If not in typo mode or word is too short, just use UNK
-                    idx = unk_idx
-                word_indices.append(idx)
-                lengths = torch.tensor([len(word_indices)], dtype=torch.long)
-                with torch.no_grad():
-                    indices_tensor = torch.tensor([word_indices], dtype=torch.long)
-                    log_probs = self.model(indices_tensor, lengths)
-        else:
-            indices = [self.word_embeddings.word_indexer.index_of(word) for word in ex_words]
-            indices = [idx if idx != -1 else unk_idx for idx in indices]
-            lengths = torch.tensor([len(ex_words)], dtype=torch.long)
-            with torch.no_grad():
-                indices_tensor = torch.tensor([indices], dtype=torch.long)
-                log_probs = self.model(indices_tensor, lengths)
-            # DEBUG
-            # log.info(f'[+] {log_probs=}')
-        prediction = torch.argmax(log_probs, dim=1).item()
+        char_indices_per_word = []
+        for word in ex_words:
+            char_indices = [self.char_indexer.index_of(char) for char in word]
+            char_indices = [idx if idx != -1 else char_unk_idx for idx in char_indices]
+            char_indices_per_word.append(torch.tensor(char_indices, dtype=torch.long))
+
+        with torch.no_grad():
+            logits = self.model(word_indices_tensor, char_indices_per_word)
+            prediction = torch.argmax(logits, dim=1).item()
         return prediction
 
-    def predict_all(self, all_ex_words: List[List[str]], has_typos: bool = False):
-        batch_size = 128
-        predictions = []
-        for i in range(0, len(all_ex_words), batch_size):
-            batch = all_ex_words[i:i+batch_size]
-            batch_lengths = torch.tensor([len(ex_words) for ex_words in batch], dtype=torch.long)
-            max_len = max(len(ex) for ex in batch)
-            pad_idx = self.word_embeddings.word_indexer.index_of("PAD")
-            unk_idx = self.word_embeddings.word_indexer.index_of("UNK")
-            batch_indices_lists = [[self.word_embeddings.word_indexer.index_of(w) for w in ex_words] for ex_words in batch]
-            # Map OOVs (-1) to UNK
-            batch_indices_lists = [[idx if idx != -1 else unk_idx for idx in indices] for indices in batch_indices_lists]
-            padded_batch_indices = [indices + [pad_idx] * (max_len - len(indices)) for indices in batch_indices_lists]
-            batch_tensor = torch.tensor(padded_batch_indices, dtype=torch.long)
-            with torch.no_grad():
-                log_probs = self.model(batch_tensor, batch_lengths)
-            batch_predictions = torch.argmax(log_probs, dim=1).tolist()
-            predictions.extend(batch_predictions)
-        return predictions
+    def predict_all(self, all_ex_words: List[List[str]], has_typos: bool) -> List[int]:
+        return [self.predict(ex_words, has_typos) for ex_words in all_ex_words]
 
 def compute_accuracy(outputs: torch.Tensor, labels: torch.Tensor):
     """
@@ -256,23 +154,35 @@ def train_deep_averaging_network(args, train_exs: List[SentimentExample], dev_ex
     and return an instance of that for the typo setting if you want; you're allowed to return two different model types
     for the two settings.
     """
-    # raise NotImplementedError
-    #
-    exp_dir = "logs"
-    model_name = 'DAN'
-    # log_dir = Path(exp_dir) / f'{model_name}_{dt.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}'
-    # logger = tb.SummaryWriter(str(log_dir))
+    #exp_dir = "logs"
+    #model_name = 'DAN2'
+    #log_dir = Path(exp_dir) / f'{model_name}_{dt.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}'
+    #logger = tb.SummaryWriter(str(log_dir))
     num_epochs = args.num_epochs
     lr = args.lr
+    if lr is None:
+        lr = 2e-3 # default learning rate
     batch_size = args.batch_size
-    emb_layer = word_embeddings.get_initialized_embedding_layer(frozen=True, padding_idx=0)
+
+    char_indexer = Indexer()
+    char_indexer.add_and_get_index("UNK")  # Add UNK token
+    char_indexer.add_and_get_index("PAD")  # Add PAD token for potential batching
+    for ex in train_exs:
+        for word in ex.words:
+            for char in word:
+                char_indexer.add_and_get_index(char)
+
+    # Hyperparameters for the character model
+    char_embedding_dim = 50
+    lstm_hidden_dim = 100
     input_size = word_embeddings.get_embedding_length()
-    num_classes = 2
-    hidden_features = args.hidden_size
-    model = DeepAveragingNetwork(emb_layer, input_size, hidden_features, num_classes)
-    model.embedding_layer = emb_layer
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    glove_layer = word_embeddings.get_initialized_embedding_layer(frozen=True, padding_idx=0)
+    char_lstm = CharLSTM(len(char_indexer), char_embedding_dim, lstm_hidden_dim)
+    model = DeepAveragingLSTMNetwork(glove_layer, char_lstm, input_size, args.hidden_size, 2)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
     loss_fn = nn.CrossEntropyLoss()
+
+    optimizer.zero_grad()
 
     for i in range(num_epochs):
         random.shuffle(train_exs)
@@ -280,44 +190,54 @@ def train_deep_averaging_network(args, train_exs: List[SentimentExample], dev_ex
         total_loss = 0.0
         train_accs = []
         loss_values = []
-        for j in range(0, len(train_exs), batch_size):
+
+        for j, ex in enumerate(train_exs):
             model.zero_grad()
-            batch = train_exs[j:j + batch_size]
-            if not batch:
-                continue
-            labels = torch.tensor([ex.label for ex in batch])
-            lengths = torch.tensor([len(ex.words) for ex in batch])
-            unk_idx = word_embeddings.word_indexer.index_of("UNK")
+            word_unk_idx = word_embeddings.word_indexer.index_of("UNK")
+            char_unk_idx = char_indexer.index_of("UNK")
 
-            batch_indices_lists = [[word_embeddings.word_indexer.index_of(w) for w in ex.words] for ex in batch]
-            batch_indices_lists = [[idx if idx != -1 else unk_idx for idx in indices] for indices in batch_indices_lists]
+            word_indices = [word_embeddings.word_indexer.index_of(w) for w in ex.words]
+            word_indices = [idx if idx != -1 else word_unk_idx for idx in word_indices]
+            word_indices_tensor = torch.tensor(word_indices, dtype=torch.long)
 
-            max_len = max(len(indices) for indices in batch_indices_lists)
-            pad_idx = word_embeddings.word_indexer.index_of("PAD")
-            unk_idx = word_embeddings.word_indexer.index_of("UNK")
-            padded_batch_indices = [indices + [pad_idx] * (max_len - len(indices)) for indices in batch_indices_lists]
-            batch_tensor = torch.tensor(padded_batch_indices, dtype=torch.long)
-            # TODO: print shapes, lengths, loss, etc.
-            # log.info(f'[+] {batch_tensor.shape=} {lengths.shape=} {labels.shape=}')
-            out = model(batch_tensor, lengths)
-            loss = loss_fn(out, labels) # CE Loss expects logits not softmax
+            char_indices_per_word = []
+            for word in ex.words:
+                char_indices = [char_indexer.index_of(c) for c in word]
+                char_indices = [idx if idx != -1 else char_unk_idx for idx in char_indices]
+                char_indices_per_word.append(torch.tensor(char_indices, dtype=torch.long))
+
+            label = torch.tensor([ex.label], dtype=torch.long)
+            logits = model(word_indices_tensor, char_indices_per_word)
+            loss = loss_fn(logits, label) / batch_size
             loss.backward()
+            total_loss += loss.item() * batch_size
+            train_accs.append(compute_accuracy(logits, label))
+            loss_values.append(loss.item())
+            if (j + 1) % batch_size == 0:
+                optimizer.step()
+                optimizer.zero_grad()
+
+        if (j + 1) % batch_size != 0:
             optimizer.step()
-            total_loss += loss.item()
-            train_accs.append(compute_accuracy(out, labels))
         # Dev eval
         model.eval()
         val_accs = []
-        unk_idx = word_embeddings.word_indexer.index_of("UNK")
+
         for dev_ex in dev_exs:
+            word_unk_idx = word_embeddings.word_indexer.index_of("UNK")
+            char_unk_idx = char_indexer.index_of("UNK")
             indices = [word_embeddings.word_indexer.index_of(word) for word in dev_ex.words]
-            indices = [idx if idx != -1 else unk_idx for idx in indices]
-            length = torch.tensor([len(dev_ex.words)])
-            indices_tensor = torch.tensor([indices], dtype=torch.long)
-            label = torch.tensor([dev_ex.label])
+            indices = [idx if idx != -1 else word_unk_idx for idx in indices]
+            indices_tensor = torch.tensor(indices, dtype=torch.long)
+            char_indices_per_word = []
+            for word in dev_ex.words:
+                char_indices = [char_indexer.index_of(char) for char in word]
+                char_indices = [idx if idx != -1 else char_unk_idx for idx in char_indices]
+                char_indices_per_word.append(torch.tensor(char_indices, dtype=torch.long))
+            label = torch.tensor([dev_ex.label], dtype=torch.long)
             with torch.no_grad():
-                output = model(indices_tensor, length)
-            val_accs.append(compute_accuracy(output, label))
+                logits = model(indices_tensor, char_indices_per_word)
+            val_accs.append(compute_accuracy(logits, label))
 
         epoch_train_acc = torch.mean(torch.stack(train_accs))
         epoch_val_acc = torch.mean(torch.stack(val_accs))
@@ -328,4 +248,4 @@ def train_deep_averaging_network(args, train_exs: List[SentimentExample], dev_ex
         #logger.add_scalars("accuracy", {"train": epoch_train_acc, "dev": epoch_val_acc}, i)
         #logger.flush()
         # return
-    return NeuralSentimentClassifier(model, word_embeddings, train_exs)
+    return NeuralSentimentClassifier(model, word_embeddings, train_exs, char_indexer)
