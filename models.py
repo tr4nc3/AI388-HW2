@@ -51,7 +51,7 @@ class SentimentClassifier(object):
 class PrefixEmbeddings:
     """
     Manages embeddings for 3-character prefixes, initialized by averaging
-    the GloVe vectors of words sharing the same prefix.
+    the GloVe vectors of words sharing the same prefix of 3 chars assuming no typos in 1st 3 chars
     """
     def __init__(self, word_embeddings: WordEmbeddings):
         self.word_indexer = Indexer()
@@ -94,8 +94,6 @@ class CharLSTM(torch.nn.Module):
         self.lstm = nn.LSTM(embed_dim, hidden_dim, batch_first=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Added for perf
-        # x = x.to(device)
         x = self.char_emb(x)
         _, (x, _) = self.lstm(x.unsqueeze(0))
         return x.squeeze(0)
@@ -112,7 +110,7 @@ class DeepAveragingNetwork(torch.nn.Module):
         self.dan = nn.Sequential(
             self.fc1,
             nn.ReLU(),
-            nn.Dropout(p=0.4),
+            nn.Dropout(p=0.5),
             self.fc2)
         nn.init.xavier_uniform_(self.fc1.weight)
         nn.init.xavier_uniform_(self.fc2.weight)
@@ -120,56 +118,8 @@ class DeepAveragingNetwork(torch.nn.Module):
 
     def forward(self, sentence_indices, sentence_lengths: torch.Tensor) -> torch.Tensor:
         emb = self.glove_embedding_layer(sentence_indices)
-        # avg = torch.mean(emb, dim=1)
         avg = torch.sum(emb, dim=1) / sentence_lengths.unsqueeze(1).float()
         logits = self.dan(avg)
-        return logits
-
-
-class DeepAveragingLSTMNetwork(torch.nn.Module):
-    def __init__(self, glove_embedding_layer: nn.Embedding, char_lstm :nn.Module, in_features, hidden_features, out_features: int) -> None:
-        super(DeepAveragingLSTMNetwork, self).__init__()
-        self.glove_embedding_layer = glove_embedding_layer
-        self.char_lstm = char_lstm
-        self.in_features = in_features
-        self.out_features = out_features
-        self.hidden_features = hidden_features
-        combined_dim = self.glove_embedding_layer.embedding_dim + self.char_lstm.lstm.hidden_size
-        self.fc1 = nn.Linear(combined_dim, hidden_features)
-        self.fc2 = nn.Linear(hidden_features, out_features)
-        self.dan2 = nn.Sequential(
-            self.fc1,
-            # nn.ReLU(),
-            nn.Sigmoid(),
-            # nn.Dropout(p=0.1, inplace=False),
-            self.fc2
-        )# .to(device)
-        nn.init.xavier_uniform_(self.fc1.weight)
-        nn.init.xavier_uniform_(self.fc2.weight)
-        self.loss = nn.CrossEntropyLoss()
-
-    def forward(self, word_indices, char_indices_per_word: torch.Tensor) -> torch.Tensor :
-        hybrid_vectors = []
-        # Added for perf
-        word_indices = word_indices# .to(device)
-        char_indices_per_word = [x for x in char_indices_per_word]
-
-        for i in range(len(word_indices)):
-            word_idx = word_indices[i].to(device)
-            char_indices = char_indices_per_word[i].to(device)
-            glove_vec = self.glove_embedding_layer(word_idx).to(device)
-
-            if len(char_indices) < 2:
-                # Create a zero tensor of the correct size for the char vector
-                char_vec = torch.zeros(self.char_lstm.lstm.hidden_size, device=device)
-            else:
-                # Only run the CharLSTM for words with 2 or more characters
-                char_vec = self.char_lstm(char_indices).to(device)
-            #char_vec = self.char_lstm(char_indices).to(device)
-            hybrid_vec = torch.cat((glove_vec.squeeze(), char_vec.squeeze()), dim=0)
-            hybrid_vectors.append(hybrid_vec)
-        avg_vector = torch.mean(torch.stack(hybrid_vectors), dim=0)
-        logits = self.dan2(avg_vector.unsqueeze(0))
         return logits
 
 
@@ -182,37 +132,13 @@ class TrivialSentimentClassifier(SentimentClassifier):
         return 1
 
 class NeuralSentimentClassifier(SentimentClassifier):
-    # def __init__(self, model: DeepAveragingLSTMNetwork, word_embeddings: WordEmbeddings, train_exs: List[SentimentExample], char_indexer: Indexer):
     def __init__(self, model: DeepAveragingNetwork, word_embeddings: WordEmbeddings, train_model_for_typo_setting: bool):
         self.model = model
         self.model = self.model.to(device)
         self.model.eval()
-        # self.word_indexer = word_embeddings.word_indexer
-        #self.char_indexer = char_indexer
-        #self.train_exs = train_exs
         self.embeddings = word_embeddings
         self.word_indexer = word_embeddings.word_indexer
         self.train_model_for_typo_setting = train_model_for_typo_setting
-
-    # def predict(self, ex_words: List[str], has_typos: bool) -> int:
-    #     """
-    #     """
-    #     word_unk_idx = self.word_indexer.index_of('UNK')
-    #     char_unk_idx = self.char_indexer.index_of('UNK')
-    #     word_indices = [self.word_indexer.index_of(word) for word in ex_words]
-    #     word_indices = [idx if idx != -1 else word_unk_idx for idx in word_indices]
-    #     word_indices_tensor = torch.tensor(word_indices, dtype=torch.long, device=device)
-    #
-    #     char_indices_per_word = []
-    #     for word in ex_words:
-    #         char_indices = [self.char_indexer.index_of(char) for char in word]
-    #         char_indices = [idx if idx != -1 else char_unk_idx for idx in char_indices]
-    #         char_indices_per_word.append(torch.tensor(char_indices, dtype=torch.long, device=device))
-    #
-    #     with torch.no_grad():
-    #         logits = self.model(word_indices_tensor, char_indices_per_word)
-    #         prediction = torch.argmax(logits, dim=1).item()
-    #     return prediction
 
     def predict(self, ex_words: List[str], has_typos: bool) -> int:
         word_unk_idx = self.word_indexer.index_of('UNK')
@@ -279,28 +205,7 @@ def train_deep_averaging_network(args, train_exs: List[SentimentExample], dev_ex
     model = model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     loss_fn = nn.CrossEntropyLoss()
-
     optimizer.zero_grad()
-
-    # char_indexer = Indexer()
-    # char_indexer.add_and_get_index("UNK")  # Add UNK token
-    # char_indexer.add_and_get_index("PAD")  # Add PAD token for potential batching
-    # for ex in train_exs:
-    #     for word in ex.words:
-    #         for char in word:
-    #             char_indexer.add_and_get_index(char)
-    # # Hyperparameters for the character model
-    # char_embedding_dim = 50
-    # lstm_hidden_dim = 100
-    # input_size = word_embeddings.get_embedding_length()
-    # glove_layer = word_embeddings.get_initialized_embedding_layer(frozen=False, padding_idx=0).to(device)#, padding_idx=0).to(device)
-    # char_lstm = CharLSTM(len(char_indexer), char_embedding_dim, lstm_hidden_dim).to(device)
-    # model = DeepAveragingLSTMNetwork(glove_layer, char_lstm, input_size, args.hidden_size, 2).to(device)
-    # optimizer = optim.Adam(model.parameters(), lr=args.lr)# , weight_decay=1e-5)
-    # loss_fn = nn.CrossEntropyLoss().to(device)
-    #
-    # optimizer.zero_grad()
-
     for i in range(num_epochs):
         random.shuffle(train_exs)
         model.train()
@@ -308,19 +213,14 @@ def train_deep_averaging_network(args, train_exs: List[SentimentExample], dev_ex
         train_accs = []
         loss_values = []
         optimizer.zero_grad()
-
         for j, ex in enumerate(train_exs):
-            # model.zero_grad()
             if train_model_for_typo_setting:
                 tokens_to_lookup = [word[:3] if len(word) >= 3 else "UNK" for word in ex.words]
             else:
                 tokens_to_lookup = ex.words
             word_unk_idx = embeddings_for_model.word_indexer.index_of("UNK")
-            # char_unk_idx = char_indexer.index_of("UNK")
-
             word_indices = [embeddings_for_model.word_indexer.index_of(w) for w in tokens_to_lookup]
             word_indices = [idx if idx != -1 else word_unk_idx for idx in word_indices]
-            # word_indices = [idx for idx in word_indices if idx != -1]
             word_indices_tensor = torch.tensor(word_indices, dtype=torch.long, device=device).unsqueeze(0)
             lengths_tensor = torch.tensor([len(word_indices)], dtype=torch.long, device=device)
             label = torch.tensor([ex.label], dtype=torch.long, device=device)
@@ -333,38 +233,21 @@ def train_deep_averaging_network(args, train_exs: List[SentimentExample], dev_ex
             if (j + 1) % batch_size == 0:
                 optimizer.step()
                 optimizer.zero_grad()
-
-            # char_indices_per_word = []
-            # for word in ex.words:
-            #     char_indices = [char_indexer.index_of(c) for c in word]
-            #     char_indices = [idx if idx != -1 else char_unk_idx for idx in char_indices]
-            #     # char_indices = [idx for idx in char_indices if idx != -1]
-            #     char_indices_per_word.append(torch.tensor(char_indices, dtype=torch.long))
-
         if (j + 1) % batch_size != 0:
             optimizer.step()
-        # Dev eval
+        # Dev evaluation
         model.eval()
         val_accs = []
-
         for dev_ex in dev_exs:
             word_unk_idx = embeddings_for_model.word_indexer.index_of("UNK")
             if train_model_for_typo_setting:
                 tokens_to_lookup = [word[:3] if len(word) >= 3 else "UNK" for word in dev_ex.words]
             else:
                 tokens_to_lookup = dev_ex.words
-            #char_unk_idx = char_indexer.index_of("UNK")
             indices = [embeddings_for_model.word_indexer.index_of(word) for word in tokens_to_lookup]
             indices = [idx if idx != -1 else word_unk_idx for idx in indices]
-            #indices = [idx for idx in indices if idx != -1]
             indices_tensor = torch.tensor([indices], dtype=torch.long, device=device) # .unsqueeze(0)
             lengths_tensor = torch.tensor([len(indices)], dtype=torch.long, device=device)
-            #char_indices_per_word = []
-            #for word in dev_ex.words:
-            #    char_indices = [char_indexer.index_of(char) for char in word]
-            #    char_indices = [idx if idx != -1 else char_unk_idx for idx in char_indices]
-                #char_indices = [ idx for idx in char_indices if idx != -1]
-            #    char_indices_per_word.append(torch.tensor(char_indices, dtype=torch.long, device=device))
             label = torch.tensor([dev_ex.label], dtype=torch.long, device=device)
             with torch.no_grad():
                 logits = model(indices_tensor, lengths_tensor).to(device)
@@ -379,5 +262,4 @@ def train_deep_averaging_network(args, train_exs: List[SentimentExample], dev_ex
         # logger.add_scalars("accuracy", {"train": epoch_train_acc, "dev": epoch_val_acc}, i)
         # logger.flush()
         # return
-    # return NeuralSentimentClassifier(model, word_embeddings, train_exs, char_indexer)
     return NeuralSentimentClassifier(model, embeddings_for_model, train_model_for_typo_setting=train_model_for_typo_setting)
